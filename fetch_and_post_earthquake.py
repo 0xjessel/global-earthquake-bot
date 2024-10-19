@@ -73,7 +73,7 @@ def post_to_threads(earthquakes):
             location = f"in {location}"
 
         post_message = f"{magnitude} magnitude earthquake occurred {location}."
-        google_maps_link = f"https://www.google.com/maps/place/{lat}+{lon}/@{lat},{lon},9z"
+        google_maps_link = f"https://www.google.com/maps/place/{lat}+{lon}/@{lat},{lon},4z"
         usgs_link = earthquake['properties']['url']
 
         details_message = f" Details: {usgs_link}"
