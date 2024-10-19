@@ -4,6 +4,9 @@ from datetime import datetime, timedelta, timezone
 import os
 import time
 import re  # Import the regular expression module
+from dotenv import load_dotenv
+
+load_dotenv('.env.local')
 
 def fetch_new_earthquakes():
     max_attempts = 5  
@@ -85,7 +88,6 @@ def post_to_threads(earthquakes):
             f"&access_token={THREADS_ACCESS_TOKEN}&media_type=TEXT&link_attachment={quote(google_maps_link)}"
         )
         
-        """
         try:
             response = requests.post(THREADS_API_URL)
             response.raise_for_status()
@@ -100,7 +102,6 @@ def post_to_threads(earthquakes):
             print("Earthquake posted successfully.")
         except requests.RequestException as e:
             print(f"Failed to post earthquake: {e}")
-            """
 
 if __name__ == "__main__":
     new_earthquakes = fetch_new_earthquakes()
