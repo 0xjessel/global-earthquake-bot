@@ -25,6 +25,7 @@ def fetch_new_earthquakes():
             }
 
             response = requests.get('https://earthquake.usgs.gov/fdsnws/event/1/query', params=params)
+            print(response.url)
             response.raise_for_status()  # Raise an error for bad responses
             
             data = response.json()
