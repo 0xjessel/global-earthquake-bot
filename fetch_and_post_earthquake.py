@@ -39,7 +39,7 @@ def fetch_new_earthquakes():
                 print(f"earthquake updated: {datetime.fromtimestamp(feature['properties']['updated'] / 1000).strftime('%Y-%m-%d %H:%M:%S')}")
 
                 # add earthquake only if it was updated within 30m since the earthquake happened
-                if (feature['properties']['updated'] / 1000) - (feature['properties']['time'] / 1000) <= 1800:
+                if (feature['properties']['updated'] / 1000) - (feature['properties']['time'] / 1000) <= 3600:
                   new_earthquakes.append(feature)
             
             return new_earthquakes
