@@ -15,6 +15,12 @@ def fetch_new_earthquakes():
     # Get the current time once before the loop
     current_time = datetime.now(timezone.utc)
 
+    if os.path.exists('last_usgs_link.txt'):
+        with open('last_usgs_link.txt', 'r') as file:
+            saved_usgs_link = file.read().strip()
+    else:
+        saved_usgs_link = ""  
+
     while attempt < max_attempts:
         try:
             params = {
@@ -38,7 +44,13 @@ def fetch_new_earthquakes():
                 print(f"earthquake occurred: {datetime.fromtimestamp(feature['properties']['time'] / 1000).strftime('%Y-%m-%d %H:%M:%S')}")
                 print(f"earthquake updated: {datetime.fromtimestamp(feature['properties']['updated'] / 1000).strftime('%Y-%m-%d %H:%M:%S')}")
 
-                # add earthquake only if it was updated within 30m since the earthquake happened
+                # Check if the current USGS link matches the saved link
+                current_usgs_link = feature['properties']['url']
+                if current_usgs_link == saved_usgs_link:
+                    print("Skipping already posted earthquake.")
+                    continue  
+
+                # add earthquake only if it was updated within 1h since the earthquake happened
                 if (feature['properties']['updated'] / 1000) - (feature['properties']['time'] / 1000) <= 3600:
                   new_earthquakes.append(feature)
             
@@ -106,6 +118,10 @@ def post_to_threads(earthquakes):
             print("Earthquake posted successfully.")
         except requests.RequestException as e:
             print(f"Failed to post earthquake: {e}")
+
+        # Save the USGS link to a text file, overwriting any previous content
+        with open('last_usgs_link.txt', 'w') as file:
+            file.write(usgs_link)
 
 if __name__ == "__main__":
     new_earthquakes = fetch_new_earthquakes()
