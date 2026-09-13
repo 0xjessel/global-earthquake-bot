@@ -3,3 +3,9 @@
 .env.local
 
 venv
+# runtime state / logs (never track)
+__pycache__/
+*.log
+*.log.gz
+earthquake_state.json
+last_usgs_link.txt
