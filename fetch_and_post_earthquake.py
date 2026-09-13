@@ -89,7 +89,7 @@ def fetch_new_earthquakes():
     current_time = datetime.now(timezone.utc)
     params = {
         'format': 'geojson',
-        'updatedafter': (current_time - timedelta(seconds=390)).isoformat(),
+        'updatedafter': (current_time - timedelta(minutes=30)).isoformat(),
         'minmagnitude': 5.0,
     }
 
@@ -135,9 +135,7 @@ def fetch_new_earthquakes():
         print(f"earthquake occurred: {datetime.fromtimestamp(feature['properties']['time'] / 1000).strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"earthquake updated: {datetime.fromtimestamp(feature['properties']['updated'] / 1000).strftime('%Y-%m-%d %H:%M:%S')}")
 
-        # add earthquake only if it was updated within 1h since the earthquake happened
-        if (feature['properties']['updated'] / 1000) - (feature['properties']['time'] / 1000) <= 3600:
-          new_earthquakes.append(feature)
+        new_earthquakes.append(feature)
 
     return new_earthquakes
 
@@ -254,6 +252,19 @@ def main():
     if pruned:
         print(f"Pruned {pruned} seen entries older than 24h.")
 
+    failed = state.setdefault('failed', {})
+    for fid in list(failed.keys()):
+        keep = False
+        try:
+            first = datetime.fromisoformat(failed[fid]['first'])
+            if first.tzinfo is None:
+                first = first.replace(tzinfo=timezone.utc)
+            keep = (now - first) <= STATE_MAX_AGE
+        except (ValueError, TypeError, KeyError):
+            keep = False
+        if not keep:
+            del failed[fid]
+
     seen = state['seen']
     to_post = [eq for eq in earthquakes if eq.get('id') and eq['id'] not in seen]
 
@@ -275,11 +286,41 @@ def main():
         if post_single_to_threads(post_message, google_maps_link):
             posted_ids.append(eq['id'])
 
-    if posted_ids:
-        for fid in posted_ids:
+    failed_ids = [eq['id'] for eq in to_post if eq['id'] not in posted_ids]
+
+    for fid in posted_ids:
+        seen[fid] = now.isoformat()
+        if fid in failed:
+            del failed[fid]
+            print(f"Posting succeeded for {fid}; clearing retry record.")
+
+    for fid in failed_ids:
+        rec = failed.get(fid)
+        if rec is None:
+            rec = {'attempts': 0, 'first': now.isoformat()}
+            failed[fid] = rec
+        rec['attempts'] += 1
+        try:
+            first = datetime.fromisoformat(rec['first'])
+            if first.tzinfo is None:
+                first = first.replace(tzinfo=timezone.utc)
+            age = now - first
+        except (ValueError, TypeError):
+            first = now
+            age = timedelta(0)
+        if rec['attempts'] >= 3 or age >= timedelta(minutes=30):
             seen[fid] = now.isoformat()
+            del failed[fid]
+            print(f"Giving up on {fid} after {rec['attempts']} attempt(s) over {age}; marked as seen.")
+
+    if posted_ids or failed_ids:
         save_state(state)
-        print(f"State updated; now tracking {len(seen)} seen ids.")
+        if posted_ids:
+            print(f"State updated; now tracking {len(seen)} seen ids.")
+        if failed:
+            print(f"Pending retry next run: {sorted(failed.keys())}")
+        elif failed_ids:
+            print("All failed posts resolved; nothing pending.")
     else:
         print("No earthquakes posted successfully; state file not updated (will retry next run).")
 
