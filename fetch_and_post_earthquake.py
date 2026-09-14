@@ -406,7 +406,7 @@ def main():
             del failed[fid]
             print(f"Giving up on {fid} after {rec['attempts']} attempt(s) over {age}; marked as seen.")
 
-    if posted_ids or failed_ids:
+    if posted_ids or failed_ids or skipped:
         save_state(state)
         if posted_ids:
             print(f"State updated; now tracking {len(seen)} seen ids.")
@@ -414,6 +414,8 @@ def main():
             print(f"Pending retry next run: {sorted(failed.keys())}")
         elif failed_ids:
             print("All failed posts resolved; nothing pending.")
+        if skipped:
+            print(f"Gate state saved; {len(skipped)} event(s) recorded as skipped.")
     else:
         print("No earthquakes posted successfully; state file not updated (will retry next run).")
 
