@@ -14,6 +14,18 @@ Follow my [Threads profile](https://www.threads.net/@earthquake.alerts)!
 
 I also schedule `th_access_token.py` to be a cron job that's run every month to keep the access token valid.
 
+# Notability gate (2026-09-13)
+
+Posting is score-based instead of a plain magnitude floor. Every M4.0+ event in the fetch window is scored:
+
+- **magnitude base:** M6.5+ = 100, M6.0-6.4 = 90, M5.5-5.9 = 70, M5.0-5.4 = 40, M4.5-4.9 = 20, M4.0-4.4 = 0
+- **depth:** <10 km +25, <25 km +15, <50 km +5, >70 km -10 (depth is not in the USGS feed; fetched per event via a USGS QuakeML lookup, cached in state, skipped for M6.0+ which can never fall below the bar)
+- **major-city proximity:** <100 km from a 1M+ city +25; 100-300 km from 1M+ or <100 km from a 500k-1M city +10
+
+An event posts when its score is >= 60. **Region suppression:** if a post already came from within 300 km in the last 2 hours, the bar rises to 80. Skipped events are remembered (state `skipped`) and re-considered only if USGS revises the magnitude by 0.3+ (same event id). Backtest over 90 days (2,000 M4+ events, real depth lookups): ~100 posts / 90 days (~1.1/day) vs ~5.8/day under the old M5+ floor.
+
+`major_cities.json` is a static GeoNames populated-places db (population >= 500k, ~1,210 cities). It is refreshed manually — there is intentionally **no cron / auto-refresh** for it.
+
 # Instructions
 
 1. **Clone the repository:**

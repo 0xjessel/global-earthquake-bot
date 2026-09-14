@@ -9,6 +9,7 @@ import traceback
 import re  # Import the regular expression module
 from datetime import datetime, timedelta, timezone
 import requests
+import notability
 from dotenv import load_dotenv
 
 load_dotenv('.env.local')
@@ -75,8 +76,45 @@ def prune_seen(seen, now):
     return pruned
 
 
+def get_depth(fid, state, mag):
+    """Depth in km with a small state-backed cache (avoid re-querying USGS).
+
+    M6.0+ (magnitude base >= 90) can never fall below even the region-
+    suppressed bar of 80, so skip the extra USGS call for them.
+    """
+    cache = state.setdefault('depth', {})
+    if fid in cache:
+        return cache[fid]
+    if mag is not None and mag >= 6.0:
+        return None
+    km = notability.fetch_depth_km(fid)
+    cache[fid] = km
+    return km
+
+
+def evaluate_candidate(eq, now_ts, state, posted, fetch_depth=True):
+    """Run the notability gate for one USGS feature. Never posts.
+
+    Returns (would_post, log_line). Depth is fetched (with caching) only
+    when fetch_depth is True; pass False for dry runs.
+    """
+    fid = eq['id']
+    mag = eq['properties'].get('mag')
+    depth_km = get_depth(fid, state, mag) if fetch_depth else None
+    verdict = notability.evaluate(eq, posted, now_ts, depth_km=depth_km)
+    if verdict is None:
+        return False, f"SKIP {fid} M{mag} no magnitude :: {eq['properties'].get('place')}"
+    would_post, score, breakdown, threshold, reason = verdict
+    d = f"{round(depth_km)}km" if depth_km is not None else "n/a"
+    line = (f"{'WOULD POST' if would_post else 'SKIP'} {fid} M{mag} score={score} "
+            f"thr={threshold} depth={d} base={breakdown['mag_base']}"
+            f"/d{breakdown['depth']:+d}/c{breakdown['city']:+d} ({reason}) :: "
+            f"{eq['properties'].get('place')}")
+    return would_post, line
+
+
 def fetch_new_earthquakes():
-    """Fetch recent global USGS earthquakes (minmagnitude 5.0).
+    """Fetch recent global USGS earthquakes (minmagnitude 4.0, notability pre-gate).
 
     Returns a list of feature dicts, or None on a definitive failure
     (4xx or exhausted retries). Never raises.
@@ -90,7 +128,7 @@ def fetch_new_earthquakes():
     params = {
         'format': 'geojson',
         'updatedafter': (current_time - timedelta(minutes=30)).isoformat(),
-        'minmagnitude': 5.0,
+        'minmagnitude': 4.0,
     }
 
     response = None
@@ -219,7 +257,7 @@ def post_single_to_threads(post_message, google_maps_link):
 
 def main():
     global DRY_RUN
-    ap = argparse.ArgumentParser(description="Fetch recent global earthquakes (M5+) and post new ones to Threads.")
+    ap = argparse.ArgumentParser(description="Fetch recent global earthquakes (M4+, notability-gated) and post new ones to Threads.")
     ap.add_argument('--dry-run', action='store_true',
                     help="Do everything except the Threads POST calls; do not record posts as seen")
     args = ap.parse_args()
@@ -252,6 +290,24 @@ def main():
     if pruned:
         print(f"Pruned {pruned} seen entries older than 24h.")
 
+    now_ts = now.timestamp()
+    posted = state.setdefault('posted', {})
+    for fid in list(posted.keys()):
+        try:
+            if now_ts - float(posted[fid]['ts']) > STATE_MAX_AGE.total_seconds():
+                del posted[fid]
+        except (KeyError, TypeError, ValueError):
+            del posted[fid]
+    for fid in list(state.get('skipped', {}).keys()):
+        try:
+            if now_ts - float(state['skipped'][fid]['ts']) > STATE_MAX_AGE.total_seconds():
+                del state['skipped'][fid]
+        except (KeyError, TypeError, ValueError):
+            del state['skipped'][fid]
+    for fid in list(state.get('depth', {}).keys()):
+        if fid not in state.get('seen', {}) and fid not in state.get('skipped', {}):
+            del state['depth'][fid]
+
     failed = state.setdefault('failed', {})
     for fid in list(failed.keys()):
         keep = False
@@ -266,18 +322,47 @@ def main():
             del failed[fid]
 
     seen = state['seen']
-    to_post = [eq for eq in earthquakes if eq.get('id') and eq['id'] not in seen]
+    skipped = state.setdefault('skipped', {})
+    candidates = []
+    for eq in earthquakes:
+        fid = eq.get('id')
+        if not fid:
+            continue
+        if fid in seen:
+            if fid not in skipped:
+                continue  # already posted (or dropped); final
+            # Previously skipped: reconsider only if USGS revised the
+            # magnitude materially (e.g. M5.8 -> M6.2 same event id).
+            prev_mag = skipped[fid].get('mag')
+            mag = eq['properties'].get('mag')
+            if prev_mag is not None and mag is not None \
+                    and abs(mag - prev_mag) < notability.REVISION_MIN_DELTA:
+                continue
+        candidates.append(eq)
 
-    if not to_post:
+    if not candidates:
         print("No new earthquakes found")
         return
 
     if DRY_RUN:
-        for eq in to_post:
-            post_message, _ = build_post_message(eq)
-            print(f"[DRY-RUN] WOULD POST: {post_message}")
-        print(f"[DRY-RUN] {len(to_post)} earthquake(s) would be posted; no posts made, seen-set not updated for them.")
+        for eq in candidates:
+            _, line = evaluate_candidate(eq, now_ts, state, posted, fetch_depth=False)
+            print(f"[DRY-RUN] {line}")
+        print(f"[DRY-RUN] gate evaluated {len(candidates)} candidate(s) without depth "
+              f"lookups; no posts, no state changes.")
         return
+
+    to_post = []
+    for eq in candidates:
+        would_post, line = evaluate_candidate(eq, now_ts, state, posted)
+        print(line)
+        if would_post:
+            to_post.append(eq)
+        else:
+            # Verdict stands for this magnitude; record it so unchanged
+            # re-fetches don't re-score, but a magnitude revision can
+            # reopen the event (see candidate selection above).
+            skipped[eq['id']] = {'mag': eq['properties'].get('mag'), 'ts': now_ts}
 
     posted_ids = []
     for eq in to_post:
@@ -288,8 +373,16 @@ def main():
 
     failed_ids = [eq['id'] for eq in to_post if eq['id'] not in posted_ids]
 
-    for fid in posted_ids:
+    for eq in to_post:
+        fid = eq['id']
+        if fid not in posted_ids:
+            continue
         seen[fid] = now.isoformat()
+        posted[fid] = {'ts': now_ts,
+                       'lat': eq['geometry']['coordinates'][1],
+                       'lon': eq['geometry']['coordinates'][0]}
+        if fid in skipped:
+            del skipped[fid]
         if fid in failed:
             del failed[fid]
             print(f"Posting succeeded for {fid}; clearing retry record.")
